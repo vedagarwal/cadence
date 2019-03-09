@@ -366,7 +366,7 @@ func (e *historyEngineImpl) appendFirstBatchHistoryEvents(msBuilder mutableState
 	return
 }
 
-func fullfillExecutionInfo(msBuilder mutableState, domainID, taskList string, execution workflow.WorkflowExecution, lastFirstEventID int64) {
+func fulfillExecutionInfo(msBuilder mutableState, domainID, taskList string, execution workflow.WorkflowExecution, lastFirstEventID int64) {
 	info := msBuilder.GetExecutionInfo()
 	info.DomainID = domainID
 	info.WorkflowID = *execution.WorkflowId
@@ -526,28 +526,26 @@ func (e *historyEngineImpl) StartWorkflowExecution(ctx context.Context, startReq
 	// set versions and timestamp for timer and transfer tasks
 	setTaskInfo(msBuilder.GetCurrentVersion(), time.Now(), transferTasks, timerTasks)
 
-	needDeleteHistory := true
 	historySize, retError := e.appendFirstBatchHistoryEvents(msBuilder, domainID, execution)
 	if retError != nil {
 		return
 	}
-	// delete the history if this API call is not successful, otherwise the history events will be zombie data
+	// delete history if createWorkflow failed, otherwise history will leak
 	defer func() {
-		if needDeleteHistory {
+		if retError != nil {
 			e.deleteEvents(domainID, execution, eventStoreVersion, msBuilder.GetCurrentBranch())
 		}
 	}()
 
 	// prepare for execution persistence operation
 	msBuilder.IncrementHistorySize(historySize)
-	fullfillExecutionInfo(msBuilder, domainID, taskList, execution, startedEvent.GetEventId())
+	fulfillExecutionInfo(msBuilder, domainID, taskList, execution, startedEvent.GetEventId())
 
 	// create as brand new
 	createMode := persistence.CreateWorkflowModeBrandNew
 	prevRunID := ""
 	prevLastWriteVersion := int64(0)
 	retError = e.createWorkflow(startRequest, msBuilder, createMode, prevRunID, prevLastWriteVersion, firstDecisionTask, transferTasks, timerTasks, replicationTasks, clusterMetadata)
-
 	if retError != nil {
 		t, ok := retError.(*persistence.WorkflowExecutionAlreadyStartedError)
 		if ok {
@@ -579,7 +577,6 @@ func (e *historyEngineImpl) StartWorkflowExecution(ctx context.Context, startReq
 	}
 
 	if retError == nil {
-		needDeleteHistory = false
 		e.timerProcessor.NotifyNewTimers(e.currentClusterName, e.shard.GetCurrentTime(e.currentClusterName), timerTasks)
 		return &workflow.StartWorkflowExecutionResponse{
 			RunId: execution.RunId,
@@ -2371,20 +2368,19 @@ func (e *historyEngineImpl) SignalWithStartWorkflowExecution(ctx context.Context
 	// set versions and timestamp for timer and transfer tasks
 	setTaskInfo(msBuilder.GetCurrentVersion(), time.Now(), transferTasks, timerTasks)
 
-	needDeleteHistory := true
 	historySize, retError := e.appendFirstBatchHistoryEvents(msBuilder, domainID, execution)
 	if retError != nil {
 		return
 	}
-	// delete the history if this API call is not successful, otherwise the history events will be zombie data
+	// delete history if createWorkflow failed, otherwise history will leak
 	defer func() {
-		if needDeleteHistory {
+		if retError != nil {
 			e.deleteEvents(domainID, execution, eventStoreVersion, msBuilder.GetCurrentBranch())
 		}
 	}()
 
 	msBuilder.IncrementHistorySize(historySize)
-	fullfillExecutionInfo(msBuilder, domainID, taskList, execution, startedEvent.GetEventId())
+	fulfillExecutionInfo(msBuilder, domainID, taskList, execution, startedEvent.GetEventId())
 
 	if prevMutableState != nil {
 		createMode := persistence.CreateWorkflowModeWorkflowIDReuse
@@ -2406,7 +2402,6 @@ func (e *historyEngineImpl) SignalWithStartWorkflowExecution(ctx context.Context
 	}
 
 	if retError == nil {
-		needDeleteHistory = false
 		e.timerProcessor.NotifyNewTimers(e.currentClusterName, e.shard.GetCurrentTime(e.currentClusterName), timerTasks)
 
 		return &workflow.StartWorkflowExecutionResponse{
